@@ -1,0 +1,16 @@
+Final Accuracy:
+0.9955333333333334
+
+Confusion Matrix:
+[[30007   123]
+ [  145 29725]]
+
+Classification Report:
+              precision    recall  f1-score   support
+
+  Legitimate       1.00      1.00      1.00     30130
+    Phishing       1.00      1.00      1.00     29870
+
+    accuracy                           1.00     60000
+   macro avg       1.00      1.00      1.00     60000
+weighted avg       1.00      1.00      1.00     60000

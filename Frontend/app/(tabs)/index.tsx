@@ -21,10 +21,13 @@ type SenderAnalysis = {
 };
 
 type MessageAnalysis = {
-  wordingFindings: string[];
-  wordingScore: number;
-  bertFindings: string[];
-  bertScore: number;
+  wordingFindings?: string[];
+  findings?: string[];
+  wordingScore?: number;
+  bertFindings?: string[];
+  bertScore?: number;
+  bertPhishingProbability?: number | null;
+  modelInputType?: string;
 };
 
 type HostingOrigin = {
@@ -53,14 +56,14 @@ type UrlAnalysis = {
 };
 
 type AnalysisResult = {
-  status: "Safe" | "Suspicious";
+  status: "Safe" | "Suspicious" | "Phishing" | "Legitimate";
   riskLevel: "Low" | "Medium" | "High";
   riskScore: number;
   claimedBrand: string | null;
-  senderAnalysis: SenderAnalysis;
-  messageAnalysis: MessageAnalysis;
-  urlAnalyses: UrlAnalysis[];
-  reasons: string[];
+  senderAnalysis?: SenderAnalysis;
+  messageAnalysis?: MessageAnalysis;
+  urlAnalyses?: UrlAnalysis[];
+  reasons?: string[];
 };
 
 function normalizeBaseUrl(rawUrl?: string): string {
@@ -187,8 +190,8 @@ export default function HomeScreen() {
     };
   };
 
-  const getStatusTheme = (status: "Safe" | "Suspicious") => {
-    if (status === "Suspicious") {
+  const getStatusTheme = (status: AnalysisResult["status"]) => {
+    if (status === "Suspicious" || status === "Phishing") {
       return {
         badgeBackground: "#3A2A18",
         badgeBorder: "#9A6700",
@@ -205,7 +208,7 @@ export default function HomeScreen() {
     };
   };
 
-  const getRiskBarWidth = (riskScore: number) => {
+  const getRiskBarWidth = (riskScore: number): `${number}%` => {
     const safeScore = Math.max(0, Math.min(riskScore, 100));
     return `${safeScore}%`;
   };
@@ -214,9 +217,10 @@ export default function HomeScreen() {
     if (!result) return [];
 
     return [
-      ...result.messageAnalysis.wordingFindings,
-      ...result.messageAnalysis.bertFindings,
-      ...result.senderAnalysis.findings,
+      ...(result.messageAnalysis?.wordingFindings || []),
+      ...(result.messageAnalysis?.bertFindings || []),
+      ...(result.messageAnalysis?.findings || []),
+      ...(result.senderAnalysis?.findings || []),
     ];
   };
 
@@ -224,7 +228,9 @@ export default function HomeScreen() {
     if (!result) return [];
 
     if (!result.urlAnalyses || result.urlAnalyses.length === 0) {
-      return ["No URL found in the message, so URL-based checks were not applied."];
+      return [
+        "No URL found in the message, so URL-based checks were not applied.",
+      ];
     }
 
     const items: string[] = [];
@@ -233,10 +239,10 @@ export default function HomeScreen() {
       items.push(`URL ${index + 1}: ${urlItem.url}`);
       items.push(`Domain: ${urlItem.domain}`);
 
-      urlItem.domainAgeFindings.forEach((item) => items.push(item));
-      urlItem.hostingOriginFindings.forEach((item) => items.push(item));
-      urlItem.brandDomainFindings.forEach((item) => items.push(item));
-      urlItem.urlStructureFindings.forEach((item) => items.push(item));
+      (urlItem.domainAgeFindings || []).forEach((item) => items.push(item));
+      (urlItem.hostingOriginFindings || []).forEach((item) => items.push(item));
+      (urlItem.brandDomainFindings || []).forEach((item) => items.push(item));
+      (urlItem.urlStructureFindings || []).forEach((item) => items.push(item));
     });
 
     return items;
@@ -413,7 +419,10 @@ export default function HomeScreen() {
                 ]}
               >
                 <Text
-                  style={[styles.riskLevelPillText, { color: riskTheme.pillText }]}
+                  style={[
+                    styles.riskLevelPillText,
+                    { color: riskTheme.pillText },
+                  ]}
                 >
                   {result.riskLevel} Risk
                 </Text>
@@ -438,7 +447,7 @@ export default function HomeScreen() {
           <Text style={styles.reasonsHeading}>Top Reasons</Text>
 
           <View style={styles.reasonsContainer}>
-            {result.reasons.slice(0, 5).map((reason, index) => (
+            {(result.reasons || []).slice(0, 5).map((reason, index) => (
               <View key={index} style={styles.reasonRow}>
                 <Text style={styles.reasonBullet}>•</Text>
                 <Text style={styles.reasonText}>{reason}</Text>
@@ -498,7 +507,10 @@ export default function HomeScreen() {
             <Text style={styles.errorText}>{errorMessage}</Text>
           ) : null}
 
-          <TouchableOpacity style={styles.analyzeButton} onPress={handleAnalyze}>
+          <TouchableOpacity
+            style={styles.analyzeButton}
+            onPress={handleAnalyze}
+          >
             <Ionicons name="search" size={18} color="#F4F7F6" />
             <Text style={styles.analyzeButtonText}>Analyze</Text>
           </TouchableOpacity>
