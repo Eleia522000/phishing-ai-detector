@@ -22,6 +22,8 @@ from transformers import AutoTokenizer, AutoModelForSequenceClassification
 app = Flask(__name__)
 CORS(app)
 
+print("RUNNING MSGGUARD BACKEND VERSION: HOSTING_PROVIDER_TEXT_V2")
+
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 BERT_MODEL_PATH = PROJECT_DIR / "models" / "bert_model"
@@ -76,6 +78,20 @@ TRUSTED_BRAND_DOMAINS = {
     "amazon": ["amazon.com", "amazon.co.uk"],
     "microsoft": ["microsoft.com", "live.com", "office.com", "outlook.com"],
 }
+
+
+def is_trusted_official_domain(domain):
+    """
+    Checks whether a normalized registered domain belongs to the trusted official
+    domain list. This reduces false positives for real domains such as amazon.com.
+    """
+    domain = (domain or "").lower().strip()
+
+    for trusted_domains in TRUSTED_BRAND_DOMAINS.values():
+        if domain in trusted_domains:
+            return True
+
+    return False
 
 EXPECTED_BRAND_REGIONS = {
     "paypal": ["US"],
@@ -354,10 +370,10 @@ def hosting_origin_consistency_analysis(domain, brand):
 
     country_code = origin_data.get("country_code")
 
-    findings.append(
-        f"Hosting origin detected: {origin_data.get('country')} ({country_code}), "
-        f"Org: {origin_data.get('org')}"
-    )
+    provider_name = origin_data.get("org") or "Unknown provider"
+
+    findings.append(f"Hosting provider: {provider_name}")
+    findings.append(f"Server location: {origin_data.get('country')} ({country_code})")
 
     if brand and brand in EXPECTED_BRAND_REGIONS:
         expected_regions = EXPECTED_BRAND_REGIONS[brand]
@@ -541,6 +557,7 @@ def analyze_input(text, claimed_brand=None):
         url_results.append({
             "url": url,
             "domain": domain,
+            "trustedOfficialDomain": is_trusted_official_domain(domain),
             "detectedBrandForUrl": url_brand,
             "domainAgeDays": age_days,
             "hostingOrigin": origin_data,
@@ -558,6 +575,35 @@ def analyze_input(text, claimed_brand=None):
 
     url_score = min(total_domain_age_score + total_hosting_score + total_brand_score, 60)
     overall_score = min(bert_score + url_score, 100)
+
+    # Trust Score:
+    # Risk signals increase the score.
+    # Trust signals reduce false positives only when URL identity checks did not find real risk.
+    trust_score = 0
+    trust_reasons = []
+
+    for item in url_results:
+        domain = item.get("domain", "")
+
+        if item.get("trustedOfficialDomain") is True:
+            trust_score += 40
+            trust_reasons.append(f"Trusted official domain detected: {domain}")
+
+        if item.get("domainAgeDays") is not None and item.get("domainAgeDays") > 365:
+            trust_score += 10
+            trust_reasons.append(f"Domain is older than one year: {domain}")
+
+        if item.get("brandDomainScore", 0) == 0:
+            trust_score += 10
+            trust_reasons.append(f"No brand-domain mismatch detected: {domain}")
+
+    trust_score = min(trust_score, 60)
+
+    # Apply trust reduction only when there are no suspicious URL identity signals.
+    # This keeps phishing domains like amaz0n/paypa1/g00gle risky.
+    if trust_score > 0 and url_score == 0:
+        overall_score = max(0, overall_score - trust_score)
+        reasons.extend(trust_reasons)
 
     if url_score >= 45:
         overall_score = max(overall_score, 70)
@@ -603,6 +649,7 @@ def analyze_input(text, claimed_brand=None):
         "scoreBreakdown": {
             "bertScore": bert_score,
             "urlScore": url_score,
+            "trustScore": trust_score,
             "totalDomainAgeScore": total_domain_age_score,
             "totalHostingOriginScore": total_hosting_score,
             "totalBrandDomainScore": total_brand_score,
@@ -652,5 +699,7 @@ def analyze():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True, use_reloader=False)
+
+
 
 
