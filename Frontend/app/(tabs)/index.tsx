@@ -1,6 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import Constants from "expo-constants";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useShareIntent } from "expo-share-intent";
 import {
   ActivityIndicator,
   Platform,
@@ -88,6 +89,29 @@ export default function HomeScreen() {
   const [screenState, setScreenState] = useState<ScreenState>("input");
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [errorMessage, setErrorMessage] = useState("");
+  const [sharedMessageNotice, setSharedMessageNotice] = useState("");
+
+  const { hasShareIntent, shareIntent, resetShareIntent } = useShareIntent();
+
+  useEffect(() => {
+    if (!hasShareIntent) return;
+
+    const sharedText =
+      shareIntent?.text ||
+      shareIntent?.webUrl ||
+      shareIntent?.files?.[0]?.path ||
+      "";
+
+    if (sharedText) {
+      setInput(sharedText);
+      setScreenState("input");
+      setResult(null);
+      setErrorMessage("");
+      setSharedMessageNotice("Shared message received. Press Analyze to scan it.");
+    }
+
+    resetShareIntent();
+  }, [hasShareIntent, shareIntent, resetShareIntent]);
 
   const handleAnalyze = async () => {
     if (!input.trim()) {
@@ -102,6 +126,7 @@ export default function HomeScreen() {
 
     try {
       setErrorMessage("");
+      setSharedMessageNotice("");
       setScreenState("loading");
 
       let response: Response;
@@ -158,6 +183,7 @@ export default function HomeScreen() {
     setResult(null);
     setInput("");
     setErrorMessage("");
+    setSharedMessageNotice("");
   };
 
   const getRiskTheme = (riskLevel: "Low" | "Medium" | "High") => {
@@ -483,13 +509,20 @@ export default function HomeScreen() {
           <Text style={styles.logoText}>MsgGuard</Text>
         </View>
 
-        <Text style={styles.pageTitle}>Message Sharing and Input</Text>
+        <Text style={styles.pageTitle}>Message Sharing and Analysis</Text>
         <Text style={styles.pageSubtitle}>
-          Paste a suspicious message or link for analysis
+          Paste a message or URL, or share content directly from another app for phishing analysis.
         </Text>
 
         <View style={styles.card}>
           <Text style={styles.label}>Suspicious message or URL</Text>
+
+          {sharedMessageNotice ? (
+            <View style={styles.sharedNoticeBox}>
+              <Ionicons name="share-social-outline" size={17} color="#8FE3C0" />
+              <Text style={styles.sharedNoticeText}>{sharedMessageNotice}</Text>
+            </View>
+          ) : null}
 
           <TextInput
             style={styles.input}
@@ -500,6 +533,7 @@ export default function HomeScreen() {
             onChangeText={(text) => {
               setInput(text);
               if (errorMessage) setErrorMessage("");
+              if (sharedMessageNotice) setSharedMessageNotice("");
             }}
           />
 
@@ -516,16 +550,35 @@ export default function HomeScreen() {
           </TouchableOpacity>
         </View>
 
-        <View style={styles.infoBox}>
-          <Ionicons
-            name="information-circle-outline"
-            size={18}
-            color="#8E9B98"
-          />
-          <Text style={styles.infoText}>
-            Later, this screen can also support shared messages directly from
-            other apps.
-          </Text>
+        <View style={styles.howItWorksCard}>
+          <Text style={styles.howItWorksTitle}>How it works</Text>
+
+          <View style={styles.howItWorksStep}>
+            <View style={styles.stepNumber}>
+              <Text style={styles.stepNumberText}>1</Text>
+            </View>
+            <Text style={styles.howItWorksText}>
+              Submit a message or URL
+            </Text>
+          </View>
+
+          <View style={styles.howItWorksStep}>
+            <View style={styles.stepNumber}>
+              <Text style={styles.stepNumberText}>2</Text>
+            </View>
+            <Text style={styles.howItWorksText}>
+              MsgGuard checks message content, URLs, and website identity
+            </Text>
+          </View>
+
+          <View style={styles.howItWorksStepLast}>
+            <View style={styles.stepNumber}>
+              <Text style={styles.stepNumberText}>3</Text>
+            </View>
+            <Text style={styles.howItWorksText}>
+              Receive a risk score and threat explanation
+            </Text>
+          </View>
         </View>
       </View>
     </ScrollView>
@@ -614,6 +667,24 @@ const styles = StyleSheet.create({
     color: "#DDE4E1",
     marginBottom: 10,
   },
+  sharedNoticeBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#163229",
+    borderColor: "#1F7A5C",
+    borderWidth: 1,
+    borderRadius: 14,
+    padding: 10,
+    marginBottom: 12,
+    gap: 8,
+  },
+  sharedNoticeText: {
+    flex: 1,
+    color: "#8FE3C0",
+    fontSize: 14,
+    lineHeight: 19,
+    fontWeight: "600",
+  },
   input: {
     minHeight: 170,
     backgroundColor: "#181E1D",
@@ -646,21 +717,47 @@ const styles = StyleSheet.create({
     fontSize: 17,
     fontWeight: "800",
   },
-  infoBox: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    backgroundColor: "#222B2A",
-    borderRadius: 16,
-    padding: 14,
+  howItWorksCard: {
+    backgroundColor: "#1E2927",
+    borderRadius: 20,
+    padding: 18,
     borderWidth: 1,
-    borderColor: "#313A38",
+    borderColor: "#32413E",
   },
-  infoText: {
+  howItWorksTitle: {
+    fontSize: 17,
+    fontWeight: "800",
+    color: "#F1F4F3",
+    marginBottom: 14,
+  },
+  howItWorksStep: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 12,
+  },
+  howItWorksStepLast: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  stepNumber: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: "#4C7F75",
+    justifyContent: "center",
+    alignItems: "center",
+    marginRight: 10,
+  },
+  stepNumberText: {
+    color: "#F4F7F6",
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  howItWorksText: {
     flex: 1,
-    marginLeft: 8,
-    fontSize: 14,
-    lineHeight: 20,
-    color: "#99A5A2",
+    color: "#C9D4D1",
+    fontSize: 15,
+    lineHeight: 21,
   },
   loadingScreen: {
     flex: 1,
