@@ -1,0 +1,23 @@
+MsgGuard External Evaluation Report
+==================================================
+
+Total valid samples: 1000
+Accuracy: 0.9930
+Precision: 0.9901
+Recall: 0.9960
+F1-score: 0.9930
+Average response time: 0.06 seconds
+
+Confusion Matrix:
+[[495   5]
+ [  2 498]]
+
+Classification Report:
+              precision    recall  f1-score   support
+
+  Legitimate       1.00      0.99      0.99       500
+    Phishing       0.99      1.00      0.99       500
+
+    accuracy                           0.99      1000
+   macro avg       0.99      0.99      0.99      1000
+weighted avg       0.99      0.99      0.99      1000
