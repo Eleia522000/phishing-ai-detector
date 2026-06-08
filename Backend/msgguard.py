@@ -6,8 +6,11 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 from pathlib import Path
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from pymongo import MongoClient
+from dotenv import load_dotenv
 from urllib.parse import urlparse
 from datetime import datetime, timezone
+import time
 import socket
 import requests
 import whois
@@ -23,6 +26,30 @@ app = Flask(__name__)
 CORS(app)
 
 print("RUNNING MSGGUARD BACKEND VERSION: HOSTING_PROVIDER_TEXT_V2")
+
+# --------------------------------------------------
+# MongoDB Atlas configuration
+# --------------------------------------------------
+load_dotenv()
+
+MONGO_URI = os.getenv("MONGO_URI")
+MONGO_DB_NAME = os.getenv("MONGO_DB_NAME", "phishing_ai_detector_db")
+MONGO_COLLECTION_NAME = os.getenv("MONGO_COLLECTION_NAME", "analysis_logs")
+
+mongo_collection = None
+
+try:
+    if MONGO_URI:
+        mongo_client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+        mongo_client.admin.command("ping")
+        mongo_db = mongo_client[MONGO_DB_NAME]
+        mongo_collection = mongo_db[MONGO_COLLECTION_NAME]
+        print("MongoDB connected successfully")
+    else:
+        print("MONGO_URI not found. Database logging disabled.")
+except Exception as e:
+    print(f"MongoDB connection failed: {e}")
+    mongo_collection = None
 
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
@@ -662,6 +689,41 @@ def analyze_input(text, claimed_brand=None):
     }
 
 
+def save_analysis_to_db(input_text, result, response_time):
+    """
+    Save each analysis result to MongoDB Atlas for future review,
+    feedback labeling, and model retraining.
+    The system continues working even if MongoDB is unavailable.
+    """
+    if mongo_collection is None:
+        return
+
+    try:
+        document = {
+            "input_text": input_text,
+            "status": result.get("status"),
+            "risk_level": result.get("riskLevel"),
+            "risk_score": result.get("riskScore"),
+            "claimed_brand": result.get("claimedBrand"),
+            "has_urls": result.get("hasUrls"),
+            "message_analysis": result.get("messageAnalysis"),
+            "score_breakdown": result.get("scoreBreakdown"),
+            "url_analyses": result.get("urlAnalyses"),
+            "reasons": result.get("reasons"),
+            "model_prediction": result.get("status"),
+            "real_label": None,
+            "verified_by_user": False,
+            "response_time": response_time,
+            "created_at": datetime.utcnow(),
+        }
+
+        mongo_collection.insert_one(document)
+        print("Analysis saved to MongoDB")
+
+    except Exception as e:
+        print(f"Failed to save analysis to MongoDB: {e}")
+
+
 @app.route("/", methods=["GET"])
 def home():
     return "MsgGuard backend works with BERT, message analysis, homoglyph detection, and URL identity checks"
@@ -679,7 +741,13 @@ def analyze():
         if not text:
             return jsonify({"error": "Input text cannot be empty"}), 400
 
+        start_time = time.time()
         result = analyze_input(text, claimed_brand)
+        response_time = time.time() - start_time
+
+        result["responseTime"] = response_time
+        save_analysis_to_db(text, result, response_time)
+
         return jsonify(result)
 
     data = request.get_json(silent=True)
@@ -693,12 +761,19 @@ def analyze():
     if not text:
         return jsonify({"error": "Input text cannot be empty"}), 400
 
+    start_time = time.time()
     result = analyze_input(text, claimed_brand)
+    response_time = time.time() - start_time
+
+    result["responseTime"] = response_time
+    save_analysis_to_db(text, result, response_time)
+
     return jsonify(result)
 
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True, use_reloader=False)
+
 
 
 
