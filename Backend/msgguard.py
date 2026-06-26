@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 
 import os
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
@@ -25,7 +24,7 @@ from transformers import AutoTokenizer, AutoModelForSequenceClassification
 app = Flask(__name__)
 CORS(app)
 
-print("RUNNING MSGGUARD BACKEND VERSION: HOSTING_PROVIDER_TEXT_V2")
+print("RUNNING MSGGUARD BACKEND ")
 
 # --------------------------------------------------
 # MongoDB Atlas configuration
@@ -119,6 +118,137 @@ def is_trusted_official_domain(domain):
             return True
 
     return False
+
+
+def is_url_only_input(text, urls):
+    """
+    True when the user submitted only one URL and no real message context.
+    Examples:
+    https://google.com
+    google.com
+    www.google.com
+    """
+    if not text or not urls or len(urls) != 1:
+        return False
+
+    original_text = text.strip().lower().rstrip("/")
+    url = urls[0].strip().lower().rstrip("/")
+
+    candidates = {
+        url,
+        url.replace("http://", ""),
+        url.replace("https://", ""),
+        url.replace("http://www.", ""),
+        url.replace("https://www.", ""),
+        url.replace("www.", ""),
+    }
+
+    return original_text in candidates
+
+
+def extract_text_without_urls(text, urls):
+    """
+    Removes extracted URLs from the message so we can check whether
+    there is meaningful text context besides the URL.
+    """
+    clean_text = text or ""
+
+    for url in urls:
+        raw_url = url
+        no_http = url.replace("http://", "").replace("https://", "")
+        no_www = no_http.replace("www.", "")
+
+        for candidate in [raw_url, no_http, no_www]:
+            clean_text = clean_text.replace(candidate, " ")
+
+    return re.sub(r"\s+", " ", clean_text).strip()
+
+
+def contains_high_risk_phishing_language(text):
+    """
+    Detects strong social-engineering wording that should not be ignored,
+    even if no URL exists.
+    """
+    text_lower = (text or "").lower()
+
+    high_risk_patterns = [
+        "urgent",
+        "suspended",
+        "account suspended",
+        "account locked",
+        "locked",
+        "limited",
+        "restricted",
+        "verify immediately",
+        "verify your account",
+        "verify your password",
+        "confirm your account",
+        "update your information",
+        "update your account",
+        "billing details",
+        "password",
+        "credentials",
+        "account closure",
+        "will be deleted",
+        "failure to comply",
+        "claim your prize",
+        "free iphone",
+        "gift card",
+        "bank account",
+        "security alert",
+        "login now",
+        "act now",
+    ]
+
+    return any(pattern in text_lower for pattern in high_risk_patterns)
+
+
+def contains_strong_legitimate_context(text):
+    """
+    Detects ordinary work/project context that should reduce false positives
+    when no suspicious URL identity signals exist.
+    """
+    text_lower = (text or "").lower()
+
+    legitimate_patterns = [
+        "meeting",
+        "project",
+        "presentation",
+        "schedule",
+        "document",
+        "server maintenance",
+        "maintenance window",
+        "tomorrow",
+        "best regards",
+        "regards",
+        "department",
+        "official",
+        "shared with you",
+        "work",
+        "update document",
+    ]
+
+    return any(pattern in text_lower for pattern in legitimate_patterns)
+
+
+def is_safe_trusted_url_context(text, urls, url_results):
+    """
+    Returns True only when every URL belongs to a trusted official domain
+    and there is no suspicious brand-domain identity risk.
+    """
+    if not urls or not url_results:
+        return False
+
+    all_trusted = all(item.get("trustedOfficialDomain") is True for item in url_results)
+    no_brand_risk = all(item.get("brandDomainScore", 0) == 0 for item in url_results)
+
+    if not all_trusted or not no_brand_risk:
+        return False
+
+    if contains_high_risk_phishing_language(text):
+        return False
+
+    return True
 
 EXPECTED_BRAND_REGIONS = {
     "paypal": ["US"],
@@ -626,19 +756,50 @@ def analyze_input(text, claimed_brand=None):
 
     trust_score = min(trust_score, 60)
 
-    # Apply trust reduction only when there are no suspicious URL identity signals.
-    # This keeps phishing domains like amaz0n/paypa1/g00gle risky.
-    if trust_score > 0 and url_score == 0:
-        overall_score = max(0, overall_score - trust_score)
-        reasons.extend(trust_reasons)
+    # Apply trust reduction when the URL belongs to a trusted official domain
+    # and there are no suspicious brand-domain identity signals.
+    # This prevents false positives such as google.com, amazon.com, microsoft.com.
+    trusted_safe_context = is_safe_trusted_url_context(text, urls, url_results)
 
-    if url_score >= 45:
+    if trusted_safe_context:
+        if is_url_only_input(text, urls):
+            overall_score = 0
+            reasons.extend(trust_reasons)
+            reasons.append("Trusted official URL-only input detected with no suspicious identity signals")
+        else:
+            context_text = extract_text_without_urls(text, urls)
+
+            if contains_strong_legitimate_context(context_text) or trust_score >= 40:
+                overall_score = max(0, overall_score - trust_score - url_score)
+                reasons.extend(trust_reasons)
+                reasons.append("Trusted official domain detected with safe message context")
+
+    # Escalate only when the URL risk is caused by brand/domain identity signals.
+    # Infrastructure lookup uncertainty alone should not make official domains phishing.
+    if url_score >= 45 and total_brand_score > 0:
         overall_score = max(overall_score, 70)
         reasons.append("Escalation applied: strong suspicious URL identity signals detected")
 
-    if bert_probability is not None and bert_probability >= 0.80 and url_score >= 20:
+    if bert_probability is not None and bert_probability >= 0.80 and url_score >= 20 and total_brand_score > 0:
         overall_score = max(overall_score, 75)
         reasons.append("Escalation applied: high BERT phishing probability combined with suspicious URL identity signals")
+
+    # Text-only phishing escalation:
+    # If BERT strongly detects phishing wording and the text contains high-risk
+    # social-engineering language, raise it from Suspicious to Phishing.
+    if (
+        not urls
+        and bert_probability is not None
+        and bert_probability >= 0.80
+        and contains_high_risk_phishing_language(text)
+    ):
+        overall_score = max(overall_score, 70)
+        reasons.append("Escalation applied: high-risk phishing wording without URL")
+
+    # If official trusted URLs were identified as safe, keep final score low.
+    # This protects official URL-only inputs such as https://google.com.
+    if trusted_safe_context and is_url_only_input(text, urls):
+        overall_score = 0
 
     if overall_score >= 60:
         status = "Phishing"
@@ -739,7 +900,7 @@ def analyze():
         claimed_brand = (request.args.get("claimedBrand") or "").strip() or None
 
         if not text:
-            return jsonify({"error": "Input text cannot be empty"}), 400
+            return jsonify({"success": False, "error": "Input text cannot be empty", "message": "Please enter a message before analyzing."}), 400
 
         start_time = time.time()
         result = analyze_input(text, claimed_brand)
@@ -753,13 +914,13 @@ def analyze():
     data = request.get_json(silent=True)
 
     if not data:
-        return jsonify({"error": "Missing JSON body"}), 400
+        return jsonify({"success": False, "error": "Missing JSON body", "message": "Please enter a message before analyzing."}), 400
 
     text = str(data.get("text", "")).strip()
     claimed_brand = (data.get("claimedBrand") or "").strip() or None
 
     if not text:
-        return jsonify({"error": "Input text cannot be empty"}), 400
+        return jsonify({"success": False, "error": "Input text cannot be empty", "message": "Please enter a message before analyzing."}), 400
 
     start_time = time.time()
     result = analyze_input(text, claimed_brand)
@@ -773,6 +934,8 @@ def analyze():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True, use_reloader=False)
+
+
 
 
 
