@@ -89,6 +89,7 @@ export default function HomeScreen() {
   const [screenState, setScreenState] = useState<ScreenState>("input");
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [errorMessage, setErrorMessage] = useState("");
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [sharedMessageNotice, setSharedMessageNotice] = useState("");
 
   const { hasShareIntent, shareIntent, resetShareIntent } = useShareIntent();
@@ -115,7 +116,9 @@ export default function HomeScreen() {
 
   const handleAnalyze = async () => {
     if (!input.trim()) {
-      setErrorMessage("Please paste a suspicious message or URL.");
+      setErrorMessage("Please enter a message before analyzing.");
+      setResult(null);
+      setScreenState("input");
       return;
     }
 
@@ -123,6 +126,8 @@ export default function HomeScreen() {
       setErrorMessage("Backend URL is missing.");
       return;
     }
+
+    setIsAnalyzing(true);
 
     try {
       setErrorMessage("");
@@ -166,7 +171,9 @@ export default function HomeScreen() {
       }
 
       if (!response.ok) {
-        throw new Error(data?.error || "Analysis failed");
+        throw new Error(
+          data?.message || data?.error || "Analysis failed. Please try again."
+        );
       }
 
       setResult(data);
@@ -175,6 +182,8 @@ export default function HomeScreen() {
       console.error("Analyze error:", error);
       setErrorMessage(String(error?.message || error || "Unknown error"));
       setScreenState("input");
+    } finally {
+      setIsAnalyzing(false);
     }
   };
 
@@ -542,11 +551,17 @@ export default function HomeScreen() {
           ) : null}
 
           <TouchableOpacity
-            style={styles.analyzeButton}
+            style={[
+              styles.analyzeButton,
+              isAnalyzing && styles.analyzeButtonDisabled,
+            ]}
             onPress={handleAnalyze}
+            disabled={isAnalyzing}
           >
             <Ionicons name="search" size={18} color="#F4F7F6" />
-            <Text style={styles.analyzeButtonText}>Analyze</Text>
+            <Text style={styles.analyzeButtonText}>
+              {isAnalyzing ? "Analyzing..." : "Analyze"}
+            </Text>
           </TouchableOpacity>
         </View>
 
@@ -698,10 +713,17 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   errorText: {
-    color: "#F8B4B4",
+    color: "#FF6B6B",
+    backgroundColor: "#3A171B",
+    borderColor: "#7F1D1D",
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 10,
     marginBottom: 12,
     fontSize: 14,
     lineHeight: 20,
+    fontWeight: "700",
+    textAlign: "center",
   },
   analyzeButton: {
     height: 52,
@@ -711,6 +733,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
+  },
+  analyzeButtonDisabled: {
+    opacity: 0.6,
   },
   analyzeButtonText: {
     color: "#F4F7F6",

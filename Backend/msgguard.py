@@ -1,4 +1,3 @@
-
 import os
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
@@ -24,7 +23,8 @@ from transformers import AutoTokenizer, AutoModelForSequenceClassification
 app = Flask(__name__)
 CORS(app)
 
-print("RUNNING MSGGUARD BACKEND ")
+print("RUNNING MSGGUARD BACKEND")
+
 
 # --------------------------------------------------
 # MongoDB Atlas configuration
@@ -51,9 +51,11 @@ except Exception as e:
     mongo_collection = None
 
 
+# --------------------------------------------------
+# BERT model configuration
+# --------------------------------------------------
 PROJECT_DIR = Path(__file__).resolve().parent.parent
-BERT_MODEL_PATH = PROJECT_DIR / "models" / "bert_model"
-
+BERT_MODEL_PATH = PROJECT_DIR / "models" / "bert_model_v4"
 
 bert_tokenizer = None
 bert_model = None
@@ -82,6 +84,9 @@ except Exception as e:
     print("Backend will continue running without BERT.")
 
 
+# --------------------------------------------------
+# Brand/domain data
+# --------------------------------------------------
 OFFICIAL_BRAND_DOMAINS = {
     "paypal": "paypal.com",
     "amazon": "amazon.com",
@@ -99,11 +104,111 @@ OFFICIAL_BRAND_DOMAINS = {
 
 TRUSTED_BRAND_DOMAINS = {
     "youtube": ["youtube.com", "youtu.be"],
-    "google": ["google.com", "gmail.com", "goo.gl"],
+    "google": ["google.com", "gmail.com", "goo.gl", "google.co.il"],
     "paypal": ["paypal.com", "paypal.me"],
     "amazon": ["amazon.com", "amazon.co.uk"],
     "microsoft": ["microsoft.com", "live.com", "office.com", "outlook.com"],
+    "apple": ["apple.com", "icloud.com"],
+    "bankhapoalim": ["bankhapoalim.co.il"],
+    "leumi": ["leumi.co.il"],
+    "discount": ["discountbank.co.il"],
+    "isracard": ["isracard.co.il"],
+    "visa": ["visa.com"],
+    "mastercard": ["mastercard.com"],
 }
+
+EXPECTED_BRAND_REGIONS = {
+    "paypal": ["US"],
+    "amazon": ["US"],
+    "apple": ["US"],
+    "microsoft": ["US"],
+    "google": ["US"],
+    "youtube": ["US"],
+    "bankhapoalim": ["IL"],
+    "leumi": ["IL"],
+    "discount": ["IL"],
+    "isracard": ["IL"],
+    "visa": ["US"],
+    "mastercard": ["US"],
+}
+
+
+SUSPICIOUS_URL_WORDS = [
+    "login",
+    "signin",
+    "sign-in",
+    "verify",
+    "verification",
+    "confirm",
+    "identity",
+    "update",
+    "secure",
+    "account",
+    "password",
+    "session",
+    "auth",
+    "staffportal",
+    "portal",
+    "benefits",
+    "payroll",
+    "salary",
+    "document",
+    "invoice",
+    "payment",
+    "billing",
+    "support",
+    "check",
+    "unlock",
+    "restore",
+    "limited",
+    "suspend",
+    "suspended",
+]
+
+SUSPICIOUS_MESSAGE_WORDS = [
+    "urgent",
+    "immediately",
+    "today",
+    "expires",
+    "expire",
+    "within 24 hours",
+    "before the end of the day",
+    "account locked",
+    "account suspended",
+    "temporarily disabled",
+    "access may be limited",
+    "verify your account",
+    "confirm your details",
+    "confirm your information",
+    "confirm your identity",
+    "verify your identity",
+    "update your information",
+    "password",
+    "credentials",
+    "payroll",
+    "salary",
+    "benefits",
+    "payment failed",
+    "billing details",
+    "security alert",
+    "login now",
+    "act now",
+]
+
+
+# --------------------------------------------------
+# General helpers
+# --------------------------------------------------
+def dedupe_keep_order(items):
+    seen = set()
+    clean = []
+
+    for item in items:
+        if item and item not in seen:
+            clean.append(item)
+            seen.add(item)
+
+    return clean
 
 
 def is_trusted_official_domain(domain):
@@ -183,6 +288,9 @@ def contains_high_risk_phishing_language(text):
         "verify your account",
         "verify your password",
         "confirm your account",
+        "confirm your details",
+        "confirm your information",
+        "confirm your identity",
         "update your information",
         "update your account",
         "billing details",
@@ -205,7 +313,7 @@ def contains_high_risk_phishing_language(text):
 
 def contains_strong_legitimate_context(text):
     """
-    Detects ordinary work/project context that should reduce false positives
+    Detects ordinary work/project context that can reduce false positives
     when no suspicious URL identity signals exist.
     """
     text_lower = (text or "").lower()
@@ -215,7 +323,6 @@ def contains_strong_legitimate_context(text):
         "project",
         "presentation",
         "schedule",
-        "document",
         "server maintenance",
         "maintenance window",
         "tomorrow",
@@ -225,7 +332,7 @@ def contains_strong_legitimate_context(text):
         "official",
         "shared with you",
         "work",
-        "update document",
+        "team update",
     ]
 
     return any(pattern in text_lower for pattern in legitimate_patterns)
@@ -241,29 +348,15 @@ def is_safe_trusted_url_context(text, urls, url_results):
 
     all_trusted = all(item.get("trustedOfficialDomain") is True for item in url_results)
     no_brand_risk = all(item.get("brandDomainScore", 0) == 0 for item in url_results)
+    no_structure_risk = all(item.get("urlStructureScore", 0) < 25 for item in url_results)
 
-    if not all_trusted or not no_brand_risk:
+    if not all_trusted or not no_brand_risk or not no_structure_risk:
         return False
 
     if contains_high_risk_phishing_language(text):
         return False
 
     return True
-
-EXPECTED_BRAND_REGIONS = {
-    "paypal": ["US"],
-    "amazon": ["US"],
-    "apple": ["US"],
-    "microsoft": ["US"],
-    "google": ["US"],
-    "youtube": ["US"],
-    "bankhapoalim": ["IL"],
-    "leumi": ["IL"],
-    "discount": ["IL"],
-    "isracard": ["IL"],
-    "visa": ["US"],
-    "mastercard": ["US"],
-}
 
 
 def extract_urls(text):
@@ -277,7 +370,7 @@ def extract_urls(text):
             url = "http://" + url
         cleaned_urls.append(url)
 
-    return cleaned_urls
+    return dedupe_keep_order(cleaned_urls)
 
 
 def normalize_domain(url):
@@ -390,9 +483,13 @@ def extract_domain_parts(url):
         "domain": extracted.domain.lower() if extracted.domain else "",
         "suffix": extracted.suffix.lower() if extracted.suffix else "",
         "registered_domain": registered_domain,
+        "hostname": netloc,
     }
 
 
+# --------------------------------------------------
+# Brand/domain analysis
+# --------------------------------------------------
 def detect_brand_from_url(url):
     """
     Infer brand impersonation directly from the URL.
@@ -410,6 +507,8 @@ def detect_brand_from_url(url):
 
     candidates.extend(split_domain_tokens(parts["domain"]))
     candidates.extend([normalize_homoglyphs(t) for t in split_domain_tokens(parts["domain"])])
+    candidates.extend(split_domain_tokens(parts["subdomain"]))
+    candidates.extend([normalize_homoglyphs(t) for t in split_domain_tokens(parts["subdomain"])])
 
     for brand, official_domain in OFFICIAL_BRAND_DOMAINS.items():
         official_main = official_domain.split(".")[0]
@@ -428,123 +527,6 @@ def detect_brand_from_url(url):
                 return brand
 
     return None
-
-
-def safe_get_creation_date(domain):
-    try:
-        w = whois.whois(domain)
-        creation_date = w.creation_date
-
-        if isinstance(creation_date, list):
-            creation_date = creation_date[0]
-
-        if creation_date:
-            if creation_date.tzinfo is None:
-                creation_date = creation_date.replace(tzinfo=timezone.utc)
-            return creation_date
-    except Exception:
-        pass
-
-    return None
-
-
-def compute_domain_age_days(domain):
-    creation_date = safe_get_creation_date(domain)
-
-    if not creation_date:
-        return None
-
-    now = datetime.now(timezone.utc)
-    return (now - creation_date).days
-
-
-def domain_age_verification(domain):
-    score = 0
-    findings = []
-    age_days = compute_domain_age_days(domain)
-
-    if age_days is None:
-        findings.append("Could not retrieve domain creation date")
-        return score, findings, None
-
-    findings.append(f"Domain age: {age_days} days")
-
-    if age_days < 30:
-        score += 25
-        findings.append("Very recently registered domain")
-    elif age_days < 180:
-        score += 15
-        findings.append("Relatively new domain")
-    elif age_days < 365:
-        score += 8
-        findings.append("Moderately young domain")
-    else:
-        findings.append("Domain age appears less suspicious")
-
-    return score, findings, age_days
-
-
-def resolve_ip(domain):
-    try:
-        return socket.gethostbyname(domain)
-    except Exception:
-        return None
-
-
-def lookup_hosting_origin(ip_address):
-    if not ip_address:
-        return None
-
-    try:
-        response = requests.get(f"https://ipwho.is/{ip_address}", timeout=5)
-        data = response.json()
-
-        if data.get("success"):
-            return {
-                "ip": ip_address,
-                "country_code": data.get("country_code"),
-                "country": data.get("country"),
-                "region": data.get("region"),
-                "city": data.get("city"),
-                "org": data.get("connection", {}).get("org"),
-            }
-    except Exception:
-        pass
-
-    return None
-
-
-def hosting_origin_consistency_analysis(domain, brand):
-    score = 0
-    findings = []
-
-    ip_address = resolve_ip(domain)
-    origin_data = lookup_hosting_origin(ip_address)
-
-    if not origin_data:
-        findings.append("Could not retrieve hosting-origin information")
-        return score, findings, None
-
-    country_code = origin_data.get("country_code")
-
-    provider_name = origin_data.get("org") or "Unknown provider"
-
-    findings.append(f"Hosting provider: {provider_name}")
-    findings.append(f"Server location: {origin_data.get('country')} ({country_code})")
-
-    if brand and brand in EXPECTED_BRAND_REGIONS:
-        expected_regions = EXPECTED_BRAND_REGIONS[brand]
-        if country_code not in expected_regions:
-            score += 15
-            findings.append(
-                f"Hosting-origin mismatch: expected one of {expected_regions}, got {country_code}"
-            )
-        else:
-            findings.append("Hosting origin is consistent with expected brand region")
-    else:
-        findings.append("No claimed brand available for hosting-origin comparison")
-
-    return score, findings, origin_data
 
 
 def detect_claimed_brand(text, claimed_brand=None):
@@ -634,8 +616,228 @@ def brand_domain_consistency_check(url, brand):
     if score == 0:
         findings.append("No strong brand-domain inconsistency detected")
 
-    return min(score, 60), findings
+    return min(score, 60), dedupe_keep_order(findings)
 
+
+# --------------------------------------------------
+# Domain age and hosting analysis
+# --------------------------------------------------
+def safe_get_creation_date(domain):
+    try:
+        w = whois.whois(domain)
+        creation_date = w.creation_date
+
+        if isinstance(creation_date, list):
+            creation_date = creation_date[0]
+
+        if creation_date:
+            if creation_date.tzinfo is None:
+                creation_date = creation_date.replace(tzinfo=timezone.utc)
+            return creation_date
+    except Exception:
+        pass
+
+    return None
+
+
+def compute_domain_age_days(domain):
+    creation_date = safe_get_creation_date(domain)
+
+    if not creation_date:
+        return None
+
+    now = datetime.now(timezone.utc)
+    return (now - creation_date).days
+
+
+def domain_age_verification(domain):
+    score = 0
+    findings = []
+    age_days = compute_domain_age_days(domain)
+
+    if age_days is None:
+        findings.append("Could not retrieve domain creation date")
+        return score, findings, None
+
+    findings.append(f"Domain age: {age_days} days")
+
+    if age_days < 30:
+        score += 25
+        findings.append("Very recently registered domain")
+    elif age_days < 180:
+        score += 15
+        findings.append("Relatively new domain")
+    elif age_days < 365:
+        score += 8
+        findings.append("Moderately young domain")
+    else:
+        # This is informational only. It should not force the result to safe.
+        findings.append("Domain age appears less suspicious")
+
+    return score, findings, age_days
+
+
+def resolve_ip(domain):
+    try:
+        return socket.gethostbyname(domain)
+    except Exception:
+        return None
+
+
+def lookup_hosting_origin(ip_address):
+    if not ip_address:
+        return None
+
+    try:
+        response = requests.get(f"https://ipwho.is/{ip_address}", timeout=5)
+        data = response.json()
+
+        if data.get("success"):
+            return {
+                "ip": ip_address,
+                "country_code": data.get("country_code"),
+                "country": data.get("country"),
+                "region": data.get("region"),
+                "city": data.get("city"),
+                "org": data.get("connection", {}).get("org"),
+            }
+    except Exception:
+        pass
+
+    return None
+
+
+def hosting_origin_consistency_analysis(domain, brand):
+    score = 0
+    findings = []
+
+    ip_address = resolve_ip(domain)
+    origin_data = lookup_hosting_origin(ip_address)
+
+    if not origin_data:
+        findings.append("Could not retrieve hosting-origin information")
+        return score, findings, None
+
+    country_code = origin_data.get("country_code")
+    provider_name = origin_data.get("org") or "Unknown provider"
+
+    findings.append(f"Hosting provider: {provider_name}")
+    findings.append(f"Server location: {origin_data.get('country')} ({country_code})")
+
+    if brand and brand in EXPECTED_BRAND_REGIONS:
+        expected_regions = EXPECTED_BRAND_REGIONS[brand]
+        if country_code not in expected_regions:
+            score += 15
+            findings.append(
+                f"Hosting-origin mismatch: expected one of {expected_regions}, got {country_code}"
+            )
+        else:
+            findings.append("Hosting origin is consistent with expected brand region")
+    else:
+        findings.append("No claimed brand available for hosting-origin comparison")
+
+    return score, findings, origin_data
+
+
+# --------------------------------------------------
+# Message and URL structure analysis
+# --------------------------------------------------
+def analyze_message_wording(text):
+    text_lower = (text or "").lower()
+    score = 0
+    findings = []
+
+    found_words = [
+        word for word in SUSPICIOUS_MESSAGE_WORDS
+        if word in text_lower
+    ]
+
+    found_words = dedupe_keep_order(found_words)
+
+    if found_words:
+        score += min(len(found_words) * 8, 40)
+        findings.append(
+            "Message contains suspicious social-engineering wording: "
+            + ", ".join(found_words)
+        )
+
+    if any(word in text_lower for word in ["expires", "expire", "today", "end of the day", "limited"]):
+        score += 15
+        findings.append("Message creates urgency or pressure to act quickly")
+
+    if any(word in text_lower for word in ["confirm", "verify", "identity", "details", "information"]):
+        score += 15
+        findings.append("Message asks the user to confirm or verify personal/account information")
+
+    if any(word in text_lower for word in ["password", "credentials", "payroll", "salary", "benefits", "bank account"]):
+        score += 10
+        findings.append("Message refers to sensitive account, payroll, or credential information")
+
+    return min(score, 65), dedupe_keep_order(findings)
+
+
+def analyze_url_structure(url):
+    parsed = urlparse(url)
+
+    hostname = parsed.netloc.lower().strip()
+    if ":" in hostname:
+        hostname = hostname.split(":")[0]
+
+    path = parsed.path.lower().strip()
+
+    parts = extract_domain_parts(url)
+    registered_domain = parts["registered_domain"]
+    subdomain = parts["subdomain"]
+
+    score = 0
+    findings = []
+
+    full_url_text = f"{hostname} {path}"
+
+    found_words = [
+        word for word in SUSPICIOUS_URL_WORDS
+        if word in full_url_text
+    ]
+
+    found_words = dedupe_keep_order(found_words)
+
+    if found_words:
+        score += min(len(found_words) * 10, 50)
+        findings.append(
+            "URL contains phishing-related words: "
+            + ", ".join(found_words)
+        )
+
+    if subdomain:
+        subdomain_parts = subdomain.split(".")
+
+        score += 10
+        findings.append("URL uses a subdomain before the main registered domain")
+
+        if len(subdomain_parts) >= 2:
+            score += 10
+            findings.append("URL uses multiple subdomain levels")
+
+    if "-" in hostname:
+        score += 10
+        findings.append("Hostname contains hyphenated words, common in fake portal URLs")
+
+    if any(word in path for word in ["login", "verify", "confirm", "identity", "auth", "session"]):
+        score += 20
+        findings.append("URL path looks like login, verification, or identity-confirmation flow")
+
+    # Official trusted domains can contain words such as login or account in a normal path.
+    # Reduce only the structure score, not brand mismatch signals.
+    if is_trusted_official_domain(registered_domain):
+        score = max(0, score - 40)
+        findings.append("Registered domain is in the trusted official domain list")
+
+    return min(score, 75), dedupe_keep_order(findings)
+
+
+# --------------------------------------------------
+# BERT model scoring
+# --------------------------------------------------
 def bert_text_model_score(text):
     """
     The saved BERT model was trained as binary classification:
@@ -659,6 +861,8 @@ def bert_text_model_score(text):
             probabilities = torch.softmax(outputs.logits, dim=1)
 
         phishing_probability = probabilities[0][1].item()
+
+        # Keep BERT as one signal. It should not be the only decision maker.
         score = int(phishing_probability * 50)
 
         findings = [f"BERT phishing probability: {phishing_probability:.2%}"]
@@ -670,25 +874,48 @@ def bert_text_model_score(text):
         else:
             findings.append("Low phishing probability according to BERT model")
 
-        return score, findings, phishing_probability
+        return score, dedupe_keep_order(findings), phishing_probability
 
     except Exception as e:
         return 0, [f"BERT model could not analyze input: {str(e)}"], None
 
 
+# --------------------------------------------------
+# Main analyzer
+# --------------------------------------------------
 def analyze_input(text, claimed_brand=None):
     urls = extract_urls(text)
-    reasons = []
     url_results = []
+    reasons = []
 
-    bert_score, bert_findings, bert_probability = bert_text_model_score(text)
-    reasons.extend(bert_findings)
+    # URL-only input should be judged by URL analysis, not by the BERT text classifier.
+    # Example: https://secure-login.example.com
+    # BERT may overreact to words like login/verify/account inside a URL.
+    url_only_input = is_url_only_input(text, urls)
+
+    if url_only_input:
+        bert_score = 0
+        bert_findings = []
+        bert_probability = None
+
+        # There is no real message wording in URL-only input.
+        # Do not score URL words twice as message wording.
+        wording_score = 0
+        wording_findings = []
+
+        reasons.append("URL-only input detected; BERT text classification was skipped and URL analysis was used instead")
+    else:
+        bert_score, bert_findings, bert_probability = bert_text_model_score(text)
+        bert_findings = dedupe_keep_order(bert_findings)
+
+        wording_score, wording_findings = analyze_message_wording(text)
 
     detected_brand = detect_claimed_brand(text, claimed_brand)
 
     total_domain_age_score = 0
     total_hosting_score = 0
     total_brand_score = 0
+    highest_url_score = 0
 
     for url in urls:
         domain = normalize_domain(url)
@@ -697,96 +924,85 @@ def analyze_input(text, claimed_brand=None):
         url_brand = detected_brand or detect_brand_from_url(url)
 
         age_score, age_findings, age_days = domain_age_verification(domain)
+
         hosting_score, hosting_findings, origin_data = hosting_origin_consistency_analysis(
             domain,
             url_brand
         )
+
         brand_score, brand_findings = brand_domain_consistency_check(url, url_brand)
+
+        structure_score, structure_findings = analyze_url_structure(url)
 
         total_domain_age_score += age_score
         total_hosting_score += hosting_score
         total_brand_score += brand_score
 
-        reasons.extend(age_findings)
-        reasons.extend(hosting_findings)
-        reasons.extend(brand_findings)
+        url_total_score = min(
+            age_score + hosting_score + brand_score + structure_score,
+            100
+        )
+
+        highest_url_score = max(highest_url_score, url_total_score)
 
         url_results.append({
             "url": url,
             "domain": domain,
             "trustedOfficialDomain": is_trusted_official_domain(domain),
             "detectedBrandForUrl": url_brand,
+
             "domainAgeDays": age_days,
             "hostingOrigin": origin_data,
+
             "domainAgeScore": age_score,
             "hostingOriginScore": hosting_score,
             "brandDomainScore": brand_score,
-            "domainAgeFindings": age_findings,
-            "hostingOriginFindings": hosting_findings,
-            "brandDomainFindings": brand_findings,
-            "totalUrlScore": age_score + hosting_score + brand_score,
+            "urlStructureScore": structure_score,
+
+            "domainAgeFindings": dedupe_keep_order(age_findings),
+            "hostingOriginFindings": dedupe_keep_order(hosting_findings),
+            "brandDomainFindings": dedupe_keep_order(brand_findings),
+            "urlStructureFindings": dedupe_keep_order(structure_findings),
+
+            "totalUrlScore": url_total_score,
         })
 
     if not urls:
-        reasons.append("No URL found in the message, so identity-based URL checks were not applied")
+        reasons.append("No URL found in the message, so URL checks were not applied")
 
-    url_score = min(total_domain_age_score + total_hosting_score + total_brand_score, 60)
-    overall_score = min(bert_score + url_score, 100)
+    # Use the highest URL score, not a weak average.
+    # One suspicious URL should be enough to raise the full message risk.
+    url_score = min(highest_url_score, 80)
 
-    # Trust Score:
-    # Risk signals increase the score.
-    # Trust signals reduce false positives only when URL identity checks did not find real risk.
-    trust_score = 0
-    trust_reasons = []
+    # Strongest-signal scoring.
+    # For URL-only input, do not let BERT or message-wording logic decide.
+    # The URL analyzer is the source of truth.
+    if url_only_input:
+        overall_score = url_score
+    else:
+        overall_score = max(
+            bert_score,
+            wording_score,
+            url_score
+        )
 
-    for item in url_results:
-        domain = item.get("domain", "")
+    # Combination escalation:
+    # Suspicious wording + suspicious URL = higher risk.
+    if wording_score >= 25 and url_score >= 35:
+        overall_score = max(overall_score, min(url_score + 15, 90))
+        reasons.append("Escalation applied: suspicious message wording combined with suspicious URL structure")
 
-        if item.get("trustedOfficialDomain") is True:
-            trust_score += 40
-            trust_reasons.append(f"Trusted official domain detected: {domain}")
-
-        if item.get("domainAgeDays") is not None and item.get("domainAgeDays") > 365:
-            trust_score += 10
-            trust_reasons.append(f"Domain is older than one year: {domain}")
-
-        if item.get("brandDomainScore", 0) == 0:
-            trust_score += 10
-            trust_reasons.append(f"No brand-domain mismatch detected: {domain}")
-
-    trust_score = min(trust_score, 60)
-
-    # Apply trust reduction when the URL belongs to a trusted official domain
-    # and there are no suspicious brand-domain identity signals.
-    # This prevents false positives such as google.com, amazon.com, microsoft.com.
-    trusted_safe_context = is_safe_trusted_url_context(text, urls, url_results)
-
-    if trusted_safe_context:
-        if is_url_only_input(text, urls):
-            overall_score = 0
-            reasons.extend(trust_reasons)
-            reasons.append("Trusted official URL-only input detected with no suspicious identity signals")
-        else:
-            context_text = extract_text_without_urls(text, urls)
-
-            if contains_strong_legitimate_context(context_text) or trust_score >= 40:
-                overall_score = max(0, overall_score - trust_score - url_score)
-                reasons.extend(trust_reasons)
-                reasons.append("Trusted official domain detected with safe message context")
-
-    # Escalate only when the URL risk is caused by brand/domain identity signals.
-    # Infrastructure lookup uncertainty alone should not make official domains phishing.
-    if url_score >= 45 and total_brand_score > 0:
+    # Brand/domain escalation.
+    if total_brand_score >= 35:
         overall_score = max(overall_score, 70)
-        reasons.append("Escalation applied: strong suspicious URL identity signals detected")
+        reasons.append("Escalation applied: suspicious brand-domain mismatch detected")
 
-    if bert_probability is not None and bert_probability >= 0.80 and url_score >= 20 and total_brand_score > 0:
+    # BERT + URL escalation.
+    if bert_probability is not None and bert_probability >= 0.80 and url_score >= 30:
         overall_score = max(overall_score, 75)
-        reasons.append("Escalation applied: high BERT phishing probability combined with suspicious URL identity signals")
+        reasons.append("Escalation applied: high BERT phishing probability combined with suspicious URL signals")
 
-    # Text-only phishing escalation:
-    # If BERT strongly detects phishing wording and the text contains high-risk
-    # social-engineering language, raise it from Suspicious to Phishing.
+    # Text-only phishing escalation.
     if (
         not urls
         and bert_probability is not None
@@ -796,10 +1012,24 @@ def analyze_input(text, claimed_brand=None):
         overall_score = max(overall_score, 70)
         reasons.append("Escalation applied: high-risk phishing wording without URL")
 
-    # If official trusted URLs were identified as safe, keep final score low.
-    # This protects official URL-only inputs such as https://google.com.
+    trusted_safe_context = is_safe_trusted_url_context(text, urls, url_results)
+
+    # Only force score to zero for URL-only official trusted domains.
+    # Example: https://google.com
     if trusted_safe_context and is_url_only_input(text, urls):
         overall_score = 0
+        reasons.append("Trusted official URL-only input detected with no suspicious identity signals")
+
+    # Trusted official domains with normal work/project context can reduce score,
+    # but they should not erase strong phishing wording.
+    if trusted_safe_context and not is_url_only_input(text, urls):
+        context_text = extract_text_without_urls(text, urls)
+
+        if contains_strong_legitimate_context(context_text) and wording_score < 25:
+            overall_score = max(0, overall_score - 25)
+            reasons.append("Trusted official domain detected with safe message context")
+
+    overall_score = min(round(overall_score), 100)
 
     if overall_score >= 60:
         status = "Phishing"
@@ -811,12 +1041,36 @@ def analyze_input(text, claimed_brand=None):
         status = "Legitimate"
         risk_level = "Low"
 
-    seen = set()
-    unique_reasons = []
-    for reason in reasons:
-        if reason not in seen:
-            unique_reasons.append(reason)
-            seen.add(reason)
+    message_findings = dedupe_keep_order(
+        bert_findings + wording_findings
+    )
+
+    link_findings = []
+
+    for item in url_results:
+        link_findings.append(f"URL: {item.get('url')}")
+        link_findings.append(f"Domain: {item.get('domain')}")
+
+        link_findings.extend(item.get("urlStructureFindings", []))
+        link_findings.extend(item.get("brandDomainFindings", []))
+
+        # Domain age and hosting are informational.
+        # They are not proof that a URL is safe.
+        if item.get("domainAgeDays") is not None:
+            link_findings.append(f"Domain age: {item.get('domainAgeDays')} days")
+
+        hosting = item.get("hostingOrigin")
+        if hosting:
+            provider = hosting.get("org") or "Unknown provider"
+            country = hosting.get("country") or "Unknown country"
+            country_code = hosting.get("country_code") or "Unknown"
+            link_findings.append(f"Hosting provider: {provider}")
+            link_findings.append(f"Server location: {country} ({country_code})")
+
+    reasons.extend(message_findings)
+    reasons.extend(link_findings)
+
+    unique_reasons = dedupe_keep_order(reasons)
 
     return {
         "status": status,
@@ -824,32 +1078,47 @@ def analyze_input(text, claimed_brand=None):
         "riskScore": overall_score,
         "claimedBrand": detected_brand,
         "hasUrls": len(urls) > 0,
+
         "messageAnalysis": {
+            # Use this one in the frontend to avoid duplicates.
+            "findings": message_findings,
+
+            # These are separate categories for optional detailed display.
             "bertFindings": bert_findings,
-            "wordingFindings": bert_findings,
-            "findings": bert_findings,
-            "score": bert_score,
+            "wordingFindings": wording_findings,
+
+            "score": max(bert_score, wording_score),
             "confidence": bert_probability,
             "bertScore": bert_score,
             "bertPhishingProbability": bert_probability,
-            "modelInputType": "message_and_url_text",
+            "wordingScore": wording_score,
+            "modelInputType": "url_only" if url_only_input else "message_and_url_text",
+            "bertSkippedForUrlOnly": url_only_input,
         },
+
         "scoreBreakdown": {
             "bertScore": bert_score,
+            "wordingScore": wording_score,
             "urlScore": url_score,
-            "trustScore": trust_score,
+            "highestUrlScore": highest_url_score,
             "totalDomainAgeScore": total_domain_age_score,
             "totalHostingOriginScore": total_hosting_score,
             "totalBrandDomainScore": total_brand_score,
             "urlCount": len(url_results),
         },
+
         "urlAnalyses": url_results,
+
+        # Use these in summary screens.
         "reasons": unique_reasons,
         "findings": unique_reasons,
-        "topReasons": unique_reasons,
+        "topReasons": unique_reasons[:5],
     }
 
 
+# --------------------------------------------------
+# Database logging
+# --------------------------------------------------
 def save_analysis_to_db(input_text, result, response_time):
     """
     Save each analysis result to MongoDB Atlas for future review,
@@ -885,9 +1154,22 @@ def save_analysis_to_db(input_text, result, response_time):
         print(f"Failed to save analysis to MongoDB: {e}")
 
 
+# --------------------------------------------------
+# Routes
+# --------------------------------------------------
 @app.route("/", methods=["GET"])
 def home():
-    return "MsgGuard backend works with BERT, message analysis, homoglyph detection, and URL identity checks"
+    return "MsgGuard backend works with BERT, message analysis, homoglyph detection, URL structure checks, and URL identity checks"
+
+
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({
+        "success": True,
+        "message": "MsgGuard backend is running",
+        "bertAvailable": BERT_AVAILABLE,
+        "mongoLoggingEnabled": mongo_collection is not None,
+    })
 
 
 @app.route("/analyze", methods=["GET", "POST", "OPTIONS"])
@@ -900,12 +1182,17 @@ def analyze():
         claimed_brand = (request.args.get("claimedBrand") or "").strip() or None
 
         if not text:
-            return jsonify({"success": False, "error": "Input text cannot be empty", "message": "Please enter a message before analyzing."}), 400
+            return jsonify({
+                "success": False,
+                "error": "Input text cannot be empty",
+                "message": "Please enter a message before analyzing."
+            }), 400
 
         start_time = time.time()
         result = analyze_input(text, claimed_brand)
         response_time = time.time() - start_time
 
+        result["success"] = True
         result["responseTime"] = response_time
         save_analysis_to_db(text, result, response_time)
 
@@ -914,18 +1201,28 @@ def analyze():
     data = request.get_json(silent=True)
 
     if not data:
-        return jsonify({"success": False, "error": "Missing JSON body", "message": "Please enter a message before analyzing."}), 400
+        return jsonify({
+            "success": False,
+            "error": "Missing JSON body",
+            "message": "Please enter a message before analyzing."
+        }), 400
 
-    text = str(data.get("text", "")).strip()
+    # Supports both frontend key names: "text" and "message".
+    text = str(data.get("text") or data.get("message") or "").strip()
     claimed_brand = (data.get("claimedBrand") or "").strip() or None
 
     if not text:
-        return jsonify({"success": False, "error": "Input text cannot be empty", "message": "Please enter a message before analyzing."}), 400
+        return jsonify({
+            "success": False,
+            "error": "Input text cannot be empty",
+            "message": "Please enter a message before analyzing."
+        }), 400
 
     start_time = time.time()
     result = analyze_input(text, claimed_brand)
     response_time = time.time() - start_time
 
+    result["success"] = True
     result["responseTime"] = response_time
     save_analysis_to_db(text, result, response_time)
 
@@ -934,10 +1231,5 @@ def analyze():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True, use_reloader=False)
-
-
-
-
-
 
 
