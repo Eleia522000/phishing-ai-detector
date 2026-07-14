@@ -1,4 +1,4 @@
-MsgGuard Full System Validation Report
+MsgGuard manual Validation Report
 ============================================================
 
 Backend Health
