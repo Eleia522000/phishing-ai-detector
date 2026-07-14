@@ -3,6 +3,11 @@
 Created on Sat Jun 27 02:17:56 2026
 
 @author: enabf
+This script performs incremental fine-tuning of the existing phishing-classification model. 
+It loads the previous bert_model_v3 model and trains it on additional difficult examples stored in hard_cases_big.csv.
+The input data is validated, cleaned, deduplicated, and tokenized before training. To preserve the knowledge learned by the previous model, 
+the DistilBERT base layers are frozen and mainly the classification layers are updated. After training, the improved model and tokenizer are saved as
+bert_model_v4 for use by the MsgGuard backend.
 """
 
 from pathlib import Path
