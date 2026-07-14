@@ -1,0 +1,14 @@
+Flask
+flask-cors
+pymongo
+python-dotenv
+requests
+python-whois
+tldextract
+torch
+transformers
+datasets
+pandas
+accelerate
+scikit-learn
+matplotlib
