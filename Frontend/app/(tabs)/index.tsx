@@ -72,6 +72,60 @@ function normalizeBaseUrl(rawUrl?: string): string {
   return rawUrl.endsWith("/") ? rawUrl.slice(0, -1) : rawUrl;
 }
 
+/**
+ * Formats long URLs for display without changing the original URL used by the app.
+ * The hostname is kept visible and long paths are shortened.
+ */
+function formatDisplayedUrl(value: string): string {
+  try {
+    const parsed = new URL(value);
+    const path = parsed.pathname === "/" ? "" : parsed.pathname;
+    const shortPath = path.length > 22 ? `${path.slice(0, 22)}...` : path;
+
+    return `${parsed.hostname}${shortPath}`;
+  } catch {
+    return value.length > 45 ? `${value.slice(0, 42)}...` : value;
+  }
+}
+
+/**
+ * Converts backend findings into concise, user-facing explanations.
+ * Technical implementation details and irrelevant "no brand" messages are hidden.
+ */
+function formatUserFacingLinkFinding(finding: string): string | null {
+  const value = finding.trim();
+
+  const hiddenPrefixes = [
+    "Registration lookup source:",
+    "Domain registrar:",
+    "WHOIS registrar:",
+    "Resolved IP address:",
+    "No claimed brand available",
+    "No claimed brand detected",
+    "No claimed brand available for hosting-origin comparison",
+    "No claimed brand detected for brand-domain consistency check",
+    "Hosting-origin comparison unavailable",
+    "Hosting-origin mismatch skipped because this is a trusted official domain",
+    "No strong brand-domain inconsistency detected",
+  ];
+
+  if (hiddenPrefixes.some((prefix) => value.startsWith(prefix))) {
+    return null;
+  }
+
+  const replacements: Record<string, string> = {
+    "Domain age appears less suspicious":
+      "Established domain with a long registration history",
+    "Domain matches official or trusted brand domain":
+      "Domain matches the official brand domain",
+    "Registered domain is in the trusted official domain list":
+      "Official trusted domain",
+  };
+
+  return replacements[value] || value;
+}
+
+
 const ENV_BACKEND_BASE_URL =
   normalizeBaseUrl(process.env.EXPO_PUBLIC_BACKEND_URL) ||
   normalizeBaseUrl((Constants.expoConfig?.extra as any)?.backendUrl) ||
@@ -251,12 +305,29 @@ export default function HomeScreen() {
   const getMessageDetails = () => {
     if (!result) return [];
 
-    return [
-      ...(result.messageAnalysis?.wordingFindings || []),
-      ...(result.messageAnalysis?.bertFindings || []),
-      ...(result.messageAnalysis?.findings || []),
-      ...(result.senderAnalysis?.findings || []),
-    ];
+    const analysis = result.messageAnalysis;
+    const items: string[] = [];
+
+    if (typeof analysis?.bertPhishingProbability === "number") {
+      const percentage = (analysis.bertPhishingProbability * 100).toFixed(2);
+      items.push(`BERT phishing probability: ${percentage}%`);
+    }
+
+    const wordingFindings = analysis?.wordingFindings || [];
+    const bertFindings = (analysis?.bertFindings || []).filter(
+      (finding) => !finding.startsWith("BERT phishing probability:")
+    );
+    const senderFindings = result.senderAnalysis?.findings || [];
+
+    items.push(...wordingFindings, ...bertFindings, ...senderFindings);
+
+    // Fall back to the combined backend findings only when separate findings
+    // are unavailable.
+    if (items.length === 0 && analysis?.findings) {
+      items.push(...analysis.findings);
+    }
+
+    return [...new Set(items)];
   };
 
   const getLinkDetails = () => {
@@ -264,23 +335,64 @@ export default function HomeScreen() {
 
     if (!result.urlAnalyses || result.urlAnalyses.length === 0) {
       return [
-        "No URL found in the message, so URL-based checks were not applied.",
+        "No URL was found, so link and domain checks were not required.",
       ];
     }
 
     const items: string[] = [];
 
     result.urlAnalyses.forEach((urlItem, index) => {
-      items.push(`URL ${index + 1}: ${urlItem.url}`);
+      items.push(`Analyzed link ${index + 1}: ${formatDisplayedUrl(urlItem.url)}`);
       items.push(`Domain: ${urlItem.domain}`);
 
-      (urlItem.domainAgeFindings || []).forEach((item) => items.push(item));
-      (urlItem.hostingOriginFindings || []).forEach((item) => items.push(item));
-      (urlItem.brandDomainFindings || []).forEach((item) => items.push(item));
-      (urlItem.urlStructureFindings || []).forEach((item) => items.push(item));
+      const rawFindings = [
+        ...(urlItem.domainAgeFindings || []),
+        ...(urlItem.hostingOriginFindings || []),
+        ...(urlItem.brandDomainFindings || []),
+        ...(urlItem.urlStructureFindings || []),
+      ];
+
+      const registrationUnavailable =
+        rawFindings.includes("Domain creation date: unavailable") &&
+        rawFindings.includes("Domain age: unavailable");
+
+      const hostingUnavailable =
+        rawFindings.includes("Hosting provider: unavailable") &&
+        rawFindings.includes("Server location: unavailable");
+
+      rawFindings
+        .map((finding) => {
+          if (
+            registrationUnavailable &&
+            (finding === "Domain creation date: unavailable" ||
+              finding === "Domain age: unavailable")
+          ) {
+            return null;
+          }
+
+          if (
+            hostingUnavailable &&
+            (finding === "Hosting provider: unavailable" ||
+              finding === "Server location: unavailable")
+          ) {
+            return null;
+          }
+
+          return formatUserFacingLinkFinding(finding);
+        })
+        .filter((finding): finding is string => Boolean(finding))
+        .forEach((finding) => items.push(finding));
+
+      if (registrationUnavailable) {
+        items.push("Domain registration information is unavailable");
+      }
+
+      if (hostingUnavailable) {
+        items.push("Hosting information is unavailable");
+      }
     });
 
-    return items;
+    return [...new Set(items)];
   };
 
   if (screenState === "loading") {
