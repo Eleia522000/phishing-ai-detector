@@ -14,6 +14,7 @@ print("BERT path:", BERT_MODEL_PATH)
 print("BERT exists:", BERT_MODEL_PATH.exists())
 
 try:
+    # Load the locally saved model only when the configured model folder exists.
     if BERT_MODEL_PATH.exists():
         bert_tokenizer = AutoTokenizer.from_pretrained(
             str(BERT_MODEL_PATH),
@@ -42,6 +43,7 @@ def bert_text_model_score(text: str):
         ], None
 
     try:
+        # Tokenize and limit the input length to match the model configuration.
         inputs = bert_tokenizer(
             text,
             return_tensors="pt",
@@ -50,6 +52,7 @@ def bert_text_model_score(text: str):
             max_length=128,
         )
 
+        # Disable gradient calculation because this function performs inference only.
         with torch.no_grad():
             outputs = bert_model(**inputs)
             probabilities = torch.softmax(outputs.logits, dim=1)

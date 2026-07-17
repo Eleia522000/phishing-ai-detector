@@ -131,8 +131,7 @@ const ENV_BACKEND_BASE_URL =
   normalizeBaseUrl((Constants.expoConfig?.extra as any)?.backendUrl) ||
   "";
 
-// Web/browser on your laptop
-// Phone app uses .env
+
 const BACKEND_BASE_URL =
   Platform.OS === "web" ? "http://localhost:5000" : ENV_BACKEND_BASE_URL;
 

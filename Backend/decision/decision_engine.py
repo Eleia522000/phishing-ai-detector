@@ -26,11 +26,16 @@ from Backend.services.bert_service import bert_text_model_score
 from Backend.utils.helpers import dedupe_keep_order
 
 
-def is_safe_trusted_url_context(text: str, urls: list[str], url_results: list[dict]) -> bool:
+def is_safe_trusted_url_context(
+    text: str,
+    urls: list[str],
+    url_results: list[dict],
+) -> bool:
     """Return True when every URL is trusted and no strong risk signal exists."""
     if not urls or not url_results:
         return False
 
+    # All URLs must appear legitimate before the context can be treated as safe.
     all_trusted = all(
         item.get("trustedOfficialDomain") is True
         for item in url_results
@@ -61,6 +66,7 @@ def analyze_input(text: str, claimed_brand=None) -> dict:
 
     url_only_input = is_url_only_input(text, urls)
 
+    # URL-only submissions skip text analysis and rely on URL-based checks.
     if url_only_input:
         bert_score = 0
         bert_findings = []
@@ -84,11 +90,14 @@ def analyze_input(text: str, claimed_brand=None) -> dict:
     total_brand_score = 0
     highest_url_score = 0
 
+    # Analyze each detected URL independently and preserve its detailed results.
     for url in urls:
         domain = normalize_domain(url)
         url_brand = detected_brand or detect_brand_from_url(url)
 
-        age_score, age_findings, age_days, whois_info = domain_age_verification(domain)
+        age_score, age_findings, age_days, whois_info = (
+            domain_age_verification(domain)
+        )
 
         hosting_score, hosting_findings, origin_data = (
             hosting_origin_consistency_analysis(domain, url_brand)
@@ -132,8 +141,11 @@ def analyze_input(text: str, claimed_brand=None) -> dict:
         })
 
     if not urls:
-        reasons.append("No URL found in the message, so URL checks were not applied")
+        reasons.append(
+            "No URL found in the message, so URL checks were not applied"
+        )
 
+    # The highest-risk URL determines the URL contribution to the final score.
     url_score = min(highest_url_score, 80)
 
     if url_only_input:
@@ -141,6 +153,7 @@ def analyze_input(text: str, claimed_brand=None) -> dict:
     else:
         overall_score = max(bert_score, wording_score, url_score)
 
+    # Escalate the result when multiple independent phishing signals agree.
     if wording_score >= 25 and url_score >= 35:
         overall_score = max(overall_score, min(url_score + 15, 90))
         reasons.append(
@@ -176,6 +189,7 @@ def analyze_input(text: str, claimed_brand=None) -> dict:
             "Escalation applied: high-risk phishing wording without URL"
         )
 
+    # Trusted official domains can reduce false positives when context is safe.
     trusted_safe_context = is_safe_trusted_url_context(
         text,
         urls,
@@ -192,7 +206,10 @@ def analyze_input(text: str, claimed_brand=None) -> dict:
     if trusted_safe_context and not is_url_only_input(text, urls):
         context_text = extract_text_without_urls(text, urls)
 
-        if contains_strong_legitimate_context(context_text) and wording_score < 25:
+        if (
+            contains_strong_legitimate_context(context_text)
+            and wording_score < 25
+        ):
             overall_score = max(0, overall_score - 25)
             reasons.append(
                 "Trusted official domain detected with safe message context"
@@ -210,7 +227,10 @@ def analyze_input(text: str, claimed_brand=None) -> dict:
         status = "Legitimate"
         risk_level = "Low"
 
-    message_findings = dedupe_keep_order(bert_findings + wording_findings)
+    # Combine analyzer findings into the final explanation shown to the user.
+    message_findings = dedupe_keep_order(
+        bert_findings + wording_findings
+    )
     link_findings = []
 
     for item in url_results:
@@ -223,7 +243,9 @@ def analyze_input(text: str, claimed_brand=None) -> dict:
         creation_date = item.get("domainCreationDate")
 
         if creation_date:
-            link_findings.append(f"Domain creation date: {creation_date[:10]}")
+            link_findings.append(
+                f"Domain creation date: {creation_date[:10]}"
+            )
         else:
             link_findings.append("Domain creation date: unavailable")
 

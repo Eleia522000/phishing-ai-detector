@@ -10,7 +10,7 @@ from Backend.utils.helpers import dedupe_keep_order
 
 
 def is_trusted_official_domain(domain: str) -> bool:
-    """Return True when a registered domain appears in the trusted-domain list."""
+    """Return True when a registered domain is included in the trusted list."""
     domain = (domain or "").lower().strip()
 
     for trusted_domains in TRUSTED_BRAND_DOMAINS.values():
@@ -21,10 +21,11 @@ def is_trusted_official_domain(domain: str) -> bool:
 
 
 def is_url_only_input(text: str, urls: list[str]) -> bool:
-    """Return True when the submitted input contains only one URL."""
+    """Return True when the submitted input contains exactly one URL."""
     if not text or not urls or len(urls) != 1:
         return False
 
+    # Compare equivalent URL forms without protocol, www, or trailing slashes.
     original_text = text.strip().lower().rstrip("/")
     url = urls[0].strip().lower().rstrip("/")
 
@@ -57,6 +58,7 @@ def extract_text_without_urls(text: str, urls: list[str]) -> str:
 
 def extract_urls(text: str) -> list[str]:
     """Extract, normalize, and deduplicate URLs from submitted text."""
+    # Match complete URLs, www-prefixed links, and plain domain names.
     url_pattern = (
         r"(https?://[^\s]+|www\.[^\s]+|"
         r"(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}(?:/[^\s]*)?)"
@@ -66,8 +68,11 @@ def extract_urls(text: str) -> list[str]:
 
     for url in urls:
         url = url.rstrip('.,);]>"\'')
+
+        # Add a default protocol so URL parsing works consistently.
         if not url.startswith(("http://", "https://")):
             url = "http://" + url
+
         cleaned_urls.append(url)
 
     return dedupe_keep_order(cleaned_urls)
@@ -78,10 +83,12 @@ def normalize_domain(url: str) -> str:
     parsed = urlparse(url)
     netloc = parsed.netloc.lower().strip()
 
+    # Ignore port numbers during domain extraction.
     if ":" in netloc:
         netloc = netloc.split(":")[0]
 
     extracted = tldextract.extract(netloc)
+
     if extracted.domain and extracted.suffix:
         return f"{extracted.domain}.{extracted.suffix}"
 
@@ -101,7 +108,7 @@ def extract_subdomain(url: str) -> str:
 
 
 def extract_domain_parts(url: str) -> dict:
-    """Return hostname, subdomain, main label, suffix, and registered domain."""
+    """Return the hostname and its main domain components."""
     parsed = urlparse(url)
     netloc = parsed.netloc.lower().strip()
 
@@ -110,6 +117,7 @@ def extract_domain_parts(url: str) -> dict:
 
     extracted = tldextract.extract(netloc)
 
+    # Fall back to the complete hostname when no registered domain is found.
     registered_domain = netloc
     if extracted.domain and extracted.suffix:
         registered_domain = f"{extracted.domain}.{extracted.suffix}"
@@ -124,7 +132,7 @@ def extract_domain_parts(url: str) -> dict:
 
 
 def analyze_url_structure(url: str):
-    """Score suspicious lexical and structural URL indicators."""
+    """Score suspicious lexical and structural indicators within a URL."""
     parsed = urlparse(url)
 
     hostname = parsed.netloc.lower().strip()
@@ -141,8 +149,10 @@ def analyze_url_structure(url: str):
     findings = []
     full_url_text = f"{hostname} {path}"
 
+    # Detect phishing-related wording in both the hostname and URL path.
     found_words = [
-        word for word in SUSPICIOUS_URL_WORDS
+        word
+        for word in SUSPICIOUS_URL_WORDS
         if word in full_url_text
     ]
     found_words = dedupe_keep_order(found_words)
@@ -153,10 +163,13 @@ def analyze_url_structure(url: str):
             "URL contains phishing-related words: " + ", ".join(found_words)
         )
 
+    # Subdomains can disguise the actual registered domain.
     if subdomain:
         subdomain_parts = subdomain.split(".")
         score += 10
-        findings.append("URL uses a subdomain before the main registered domain")
+        findings.append(
+            "URL uses a subdomain before the main registered domain"
+        )
 
         if len(subdomain_parts) >= 2:
             score += 10
@@ -164,16 +177,30 @@ def analyze_url_structure(url: str):
 
     if "-" in hostname:
         score += 10
-        findings.append("Hostname contains hyphenated words, common in fake portal URLs")
+        findings.append(
+            "Hostname contains hyphenated words, common in fake portal URLs"
+        )
 
-    if any(word in path for word in [
-        "login", "verify", "confirm", "identity", "auth", "session"
-    ]):
+    sensitive_path_patterns = [
+        "login",
+        "verify",
+        "confirm",
+        "identity",
+        "auth",
+        "session",
+    ]
+
+    if any(pattern in path for pattern in sensitive_path_patterns):
         score += 20
-        findings.append("URL path looks like login, verification, or identity-confirmation flow")
+        findings.append(
+            "URL path looks like login, verification, or identity-confirmation flow"
+        )
 
+    # Trusted official domains receive a lower structural risk score.
     if is_trusted_official_domain(registered_domain):
         score = max(0, score - 40)
-        findings.append("Registered domain is in the trusted official domain list")
+        findings.append(
+            "Registered domain is in the trusted official domain list"
+        )
 
     return min(score, 75), dedupe_keep_order(findings)
